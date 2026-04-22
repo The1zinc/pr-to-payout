@@ -1,94 +1,131 @@
 # PR-to-Payout
 
-PR-to-Payout is an independent dApp for code-task bounty escrow, built on the GenLayer blockchain. It is not an official GenLayer product.
+Bounty escrow for GitHub pull requests, powered by GenLayer's Intelligent Contracts.
 
-Sponsors define acceptance criteria in plain English, builders submit a GitHub PR and Vercel deployment, and the deployed contract reads public web evidence to decide whether work is complete and release payment automatically.
+A sponsor posts a bounty with acceptance criteria in plain English. A builder submits their GitHub PR and deployment URL. GenLayer validators fetch the PR page, check the deployment, and use AI consensus to decide if the work meets the criteria. If approved, the escrowed GEN tokens are released to the builder automatically. No middleman, no manual review.
 
-## Overview
+## How It Works
 
-- **Frontend**: Next.js 16 App Router with TypeScript
-- **Blockchain**: GenLayer intelligent contract for escrow, review, and appeals
-- **No backend**: No database, no traditional backend, no auth beyond wallet connection
-- **Demo mode**: Works with seeded examples when no contract is deployed
+```
+Sponsor creates bounty → Funds it with GEN → Builder submits PR + deploy URL
+                                                        ↓
+                              GenLayer validators fetch evidence from GitHub & deployment
+                                                        ↓
+                                AI consensus: approved / rejected / needs review
+                                                        ↓
+                              Approved → GEN auto-released to builder's wallet
+```
 
-## Stack
+1. **Create** — Sponsor defines a task with title, description, repo URL, acceptance criteria, payout amount, and deadline
+2. **Fund** — Sponsor sends GEN tokens to the contract as escrow
+3. **Submit** — Builder links their GitHub PR and live deployment URL
+4. **Evaluate** — GenLayer validators independently fetch the PR and deployment pages, then an LLM evaluates whether the acceptance criteria are met. Validators reach consensus using Optimistic Democracy
+5. **Payout** — If approved, escrowed GEN is sent to the builder. If rejected, the builder can appeal for a re-evaluation
 
-- Next.js 16 (App Router)
-- TypeScript
-- wagmi + viem (wallet integration)
-- genlayer-js (contract interaction)
-- Python intelligent contract on GenLayer
-- Vitest (testing)
+## Architecture
 
-## Quick Start
+**On-chain (GenLayer Bradbury Testnet)**
+- `contracts/pr_to_payout.py` — Intelligent Contract handling bounty state, GEN escrow, AI evaluation via `run_nondet_unsafe`, and automated payouts through ghost contracts
+- Storage: JSON blobs in `TreeMap[bigint, str]` for reliable serialization on GenVM
+
+**Frontend (Next.js 16)**
+- React app with wallet connection (MetaMask, Rabby, etc.)
+- Reads contract state via `genlayer-js` SDK
+- Writes transactions signed by the user's wallet
+- Falls back to demo mode when no contract is deployed
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Contract | Python on GenVM (GenLayer Bradbury testnet) |
+| Frontend | Next.js 16, TypeScript, React 19 |
+| Wallet | wagmi, viem, genlayer-js |
+| Styling | Tailwind CSS 4 |
+| Testing | Vitest |
+
+## Getting Started
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the app.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Environment Variables
+### Environment
 
-Copy `.env.example` to `.env.local`:
+Create a `.env` file:
 
-```bash
-cp .env.example .env.local
+```
+NEXT_PUBLIC_CONTRACT_ADDRESS=0x65454C3F3B6630C3E36A9B0B6628Dc4C790daF0e
+NEXT_PUBLIC_GENLAYER_NETWORK=testnetBradbury
+NEXT_PUBLIC_GENLAYER_RPC_URL=https://rpc-bradbury.genlayer.com
 ```
 
-| Variable | Description |
-|----------|-------------|
-| `NEXT_PUBLIC_CONTRACT_ADDRESS` | Deployed contract address on GenLayer |
-| `NEXT_PUBLIC_GENLAYER_NETWORK` | Network: `localnet`, `studionet`, `testnetBradbury` |
-| `NEXT_PUBLIC_GENLAYER_RPC_URL` | Optional custom RPC endpoint |
+Without `NEXT_PUBLIC_CONTRACT_ADDRESS`, the app runs in demo mode with sample bounties.
 
-Without `NEXT_PUBLIC_CONTRACT_ADDRESS`, the app runs in demo mode with seeded bounties.
+## Deploying the Contract
 
-## Deployment
+**Option A — From the browser**
 
-### Deploy Contract
+1. Connect your wallet to Bradbury testnet (Chain ID 4221)
+2. Go to `/deploy` in the app
+3. Click "Deploy to Bradbury" and approve in your wallet
+4. Copy the contract address into `.env`
 
-1. Open [GenLayer Studio](https://studio.genlayer.com)
-2. Load `contracts/pr_to_payout.py`
-3. Deploy with no constructor arguments
-4. Copy the deployed address to `.env.local`
+**Option B — From CLI**
 
-### Deploy Frontend
+```bash
+npx tsx scripts/deploy-main.ts
+```
 
-1. Push to GitHub
-2. Import project in Vercel
-3. Add environment variables:
-   ```
-   NEXT_PUBLIC_CONTRACT_ADDRESS=<address>
-   NEXT_PUBLIC_GENLAYER_NETWORK=testnetBradbury
-   NEXT_PUBLIC_GENLAYER_RPC_URL=https://rpc-bradbury.genlayer.com
-   ```
-4. Deploy
+This deploys, waits for acceptance, updates `.env`, and verifies the contract is live.
+
+## Contract Methods
+
+| Method | Type | Description |
+|--------|------|-------------|
+| `create_bounty` | write | Create a new bounty with acceptance criteria |
+| `fund_bounty` | payable | Send GEN to escrow |
+| `submit_proof` | write | Submit PR + deploy URL, triggers AI evaluation |
+| `cancel_bounty` | write | Sponsor cancels (refunds if funded) |
+| `refund_bounty` | write | Sponsor reclaims escrowed GEN |
+| `appeal_submission` | write | Builder requests re-evaluation |
+| `list_bounties_json` | view | List all bounties |
+| `get_bounty_json` | view | Get single bounty by ID |
+| `get_submission_for_bounty_json` | view | Get submission for a bounty |
 
 ## Project Structure
 
 ```
 pr-to-payout/
-├── src/
-│   ├── app/                  # Next.js pages
-│   │   ├── page.tsx          # Landing
-│   │   ├── bounties/         # Bounty listing & detail
-│   │   └── create/           # Create bounty
-│   ├── components/            # React components
-│   └── lib/                  # Utilities
-│       ├── contract.ts        # GenLayer contract adapter
-│       └── demo.ts           # Demo data
 ├── contracts/
-│   └── pr_to_payout.py       # Intelligent contract
+│   └── pr_to_payout.py        # GenLayer Intelligent Contract
+├── scripts/
+│   ├── deploy-main.ts          # CLI deployment script
+│   └── health-check.ts         # Contract liveness + create bounty test
+├── src/
+│   ├── app/                    # Next.js pages (home, create, bounties, deploy)
+│   ├── components/             # React components
+│   └── lib/
+│       ├── contract.ts         # Contract read/write adapter
+│       ├── genlayer.ts         # GenLayer client setup + wallet shim
+│       ├── validation.ts       # Zod schema validation
+│       └── types.ts            # TypeScript types
 └── package.json
 ```
 
-## Testing
+## Network Details
 
-```bash
-npm test
-```
+| Setting | Value |
+|---------|-------|
+| Network | GenLayer Bradbury Testnet |
+| Chain ID | 4221 |
+| RPC | https://rpc-bradbury.genlayer.com |
+| Explorer | https://explorer-bradbury.genlayer.com |
+| Faucet | https://testnet-faucet.genlayer.foundation |
+| Deployed Contract | `0x65454C3F3B6630C3E36A9B0B6628Dc4C790daF0e` |
 
 ## License
 
