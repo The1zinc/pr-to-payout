@@ -16,10 +16,10 @@ class PRToPayout(gl.Contract):
     # ── Storage (all GenVM-compliant types) ──────────────────────────
     next_bounty_id: bigint
     next_submission_id: bigint
-    bounties: TreeMap[bigint, str]          # bounty_id -> JSON blob
-    submissions: TreeMap[bigint, str]       # submission_id -> JSON blob
-    bounty_to_submission: TreeMap[bigint, bigint]  # bounty_id -> submission_id
-    bounty_escrow: TreeMap[bigint, u256]    # bounty_id -> escrowed wei
+    bounties: TreeMap[str, str]          # bounty_id -> JSON blob
+    submissions: TreeMap[str, str]       # submission_id -> JSON blob
+    bounty_to_submission: TreeMap[str, bigint]  # bounty_id -> submission_id
+    bounty_escrow: TreeMap[str, u256]    # bounty_id -> escrowed wei
 
     # ── Constructor ──────────────────────────────────────────────────
     def __init__(self):
@@ -28,23 +28,26 @@ class PRToPayout(gl.Contract):
 
     # ── Helpers (private) ────────────────────────────────────────────
 
+    def _id_key(self, value: bigint) -> str:
+        return str(value)
+
     def _load_bounty(self, bounty_id: bigint) -> dict:
-        raw = self.bounties.get(bounty_id, "")
+        raw = self.bounties.get(self._id_key(bounty_id), "")
         if not raw:
             raise gl.vm.UserError("Bounty not found")
         return json.loads(raw)
 
     def _save_bounty(self, bounty_id: bigint, data: dict) -> None:
-        self.bounties[bounty_id] = json.dumps(data, sort_keys=True)
+        self.bounties[self._id_key(bounty_id)] = json.dumps(data, sort_keys=True)
 
     def _load_submission(self, sub_id: bigint) -> dict:
-        raw = self.submissions.get(sub_id, "")
+        raw = self.submissions.get(self._id_key(sub_id), "")
         if not raw:
             raise gl.vm.UserError("Submission not found")
         return json.loads(raw)
 
     def _save_submission(self, sub_id: bigint, data: dict) -> None:
-        self.submissions[sub_id] = json.dumps(data, sort_keys=True)
+        self.submissions[self._id_key(sub_id)] = json.dumps(data, sort_keys=True)
 
     def _require_sender(self, expected_hex: str, label: str) -> None:
         sender = str(gl.message.sender_address)
@@ -97,7 +100,7 @@ class PRToPayout(gl.Contract):
         received = gl.message.value
         if received == u256(0):
             raise gl.vm.UserError("Must send GEN to fund the bounty")
-        self.bounty_escrow[bid] = received
+        self.bounty_escrow[self._id_key(bid)] = received
         bounty["status"] = "funded"
         self._save_bounty(bid, bounty)
 
@@ -115,7 +118,7 @@ class PRToPayout(gl.Contract):
         if bounty["status"] != "funded":
             raise gl.vm.UserError("Bounty must be funded to accept submissions")
         # Check no existing submission
-        existing_sub = self.bounty_to_submission.get(bid, bigint(0))
+        existing_sub = self.bounty_to_submission.get(self._id_key(bid), bigint(0))
         if existing_sub != 0:
             raise gl.vm.UserError("A submission already exists for this bounty")
 
@@ -233,7 +236,7 @@ Respond ONLY with a JSON object:
             "appeal_used": False,
         }
         self._save_submission(sub_id, submission_data)
-        self.bounty_to_submission[bid] = sub_id
+        self.bounty_to_submission[self._id_key(bid)] = sub_id
         self.next_submission_id = sub_id + 1
 
         bounty["status"] = bounty_status
@@ -244,9 +247,9 @@ Respond ONLY with a JSON object:
 
         # Auto-payout on approval
         if verdict == "approved":
-            escrowed = self.bounty_escrow.get(bid, u256(0))
+            escrowed = self.bounty_escrow.get(self._id_key(bid), u256(0))
             if escrowed > u256(0):
-                self.bounty_escrow[bid] = u256(0)
+                self.bounty_escrow[self._id_key(bid)] = u256(0)
                 _Recipient(Address(builder_addr)).emit_transfer(value=escrowed)
 
     @gl.public.write
@@ -257,13 +260,13 @@ Respond ONLY with a JSON object:
         if bounty["status"] not in ("open", "funded"):
             raise gl.vm.UserError("Cannot cancel bounty in current status")
         # If funded but no submission, allow cancel
-        existing_sub = self.bounty_to_submission.get(bid, bigint(0))
+        existing_sub = self.bounty_to_submission.get(self._id_key(bid), bigint(0))
         if bounty["status"] == "funded" and existing_sub != 0:
             raise gl.vm.UserError("Cannot cancel after a submission has been made")
         # Refund if escrowed
-        escrowed = self.bounty_escrow.get(bid, u256(0))
+        escrowed = self.bounty_escrow.get(self._id_key(bid), u256(0))
         if escrowed > u256(0):
-            self.bounty_escrow[bid] = u256(0)
+            self.bounty_escrow[self._id_key(bid)] = u256(0)
             sponsor_addr = bounty["sponsor"]
             _Recipient(Address(sponsor_addr)).emit_transfer(value=escrowed)
         bounty["status"] = "cancelled"
@@ -277,10 +280,10 @@ Respond ONLY with a JSON object:
         # Allow refund if rejected or if deadline passed while funded
         if bounty["status"] not in ("rejected", "funded"):
             raise gl.vm.UserError("Refund not available for current status")
-        escrowed = self.bounty_escrow.get(bid, u256(0))
+        escrowed = self.bounty_escrow.get(self._id_key(bid), u256(0))
         if escrowed == u256(0):
             raise gl.vm.UserError("No escrowed funds to refund")
-        self.bounty_escrow[bid] = u256(0)
+        self.bounty_escrow[self._id_key(bid)] = u256(0)
         bounty["status"] = "refunded"
         self._save_bounty(bid, bounty)
         sponsor_addr = bounty["sponsor"]
@@ -290,7 +293,7 @@ Respond ONLY with a JSON object:
     def appeal_submission(self, bounty_id: int) -> None:
         bid = bigint(bounty_id)
         bounty = self._load_bounty(bid)
-        sub_id = self.bounty_to_submission.get(bid, bigint(0))
+        sub_id = self.bounty_to_submission.get(self._id_key(bid), bigint(0))
         if sub_id == 0:
             raise gl.vm.UserError("No submission to appeal")
         submission = self._load_submission(sub_id)
@@ -380,9 +383,9 @@ Respond ONLY with a JSON object:
             bounty["status"] = "approved"
             bounty["chosen_submission_id"] = str(sub_id)
             # Auto-payout
-            escrowed = self.bounty_escrow.get(bid, u256(0))
+            escrowed = self.bounty_escrow.get(self._id_key(bid), u256(0))
             if escrowed > u256(0):
-                self.bounty_escrow[bid] = u256(0)
+                self.bounty_escrow[self._id_key(bid)] = u256(0)
                 _Recipient(Address(submission["builder"])).emit_transfer(value=escrowed)
         elif verdict == "rejected":
             submission["status"] = "rejected"
@@ -412,7 +415,7 @@ Respond ONLY with a JSON object:
     @gl.public.view
     def get_bounty_json(self, bounty_id: int) -> str:
         bid = bigint(bounty_id)
-        raw = self.bounties.get(bid, "")
+        raw = self.bounties.get(self._id_key(bid), "")
         if not raw:
             return json.dumps(None)
         return raw
@@ -420,10 +423,10 @@ Respond ONLY with a JSON object:
     @gl.public.view
     def get_submission_for_bounty_json(self, bounty_id: int) -> str:
         bid = bigint(bounty_id)
-        sub_id = self.bounty_to_submission.get(bid, bigint(0))
+        sub_id = self.bounty_to_submission.get(self._id_key(bid), bigint(0))
         if sub_id == 0:
             return json.dumps(None)
-        raw = self.submissions.get(sub_id, "")
+        raw = self.submissions.get(self._id_key(sub_id), "")
         if not raw:
             return json.dumps(None)
         return raw

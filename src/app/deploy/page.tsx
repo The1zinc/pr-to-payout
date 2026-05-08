@@ -1,104 +1,223 @@
 "use client";
 
-import { useState } from "react";
 import { createClient } from "genlayer-js";
 import { testnetBradbury } from "genlayer-js/chains";
 import { TransactionStatus } from "genlayer-js/types";
+import { useState } from "react";
+
 import { applyWalletShim } from "@/lib/genlayer";
 
+type DeployStep = "idle" | "loading" | "wallet" | "deploying" | "waiting" | "done" | "error";
+
+type ContractResponse = {
+  code?: string;
+  error?: string;
+};
+
+type EthereumProvider = {
+  request<T>(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<T>;
+};
+
+const BRADBURY_RPC =
+  process.env.NEXT_PUBLIC_GENLAYER_RPC_URL || "https://rpc-bradbury.genlayer.com";
+const BRADBURY_EXPLORER = "https://explorer-bradbury.genlayer.com";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getReceiptContractAddress(receipt: unknown) {
+  if (!isRecord(receipt)) return "";
+
+  const decoded = receipt.txDataDecoded;
+  if (isRecord(decoded) && typeof decoded.contractAddress === "string") {
+    return decoded.contractAddress;
+  }
+
+  return typeof receipt.recipient === "string" ? receipt.recipient : "";
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Deployment failed";
+}
+
 export default function DeployPage() {
-  const [status, setStatus] = useState<string>("Ready to deploy");
-  const [contractAddress, setContractAddress] = useState<string>("");
+  const [step, setStep] = useState<DeployStep>("idle");
+  const [status, setStatus] = useState("Ready to deploy the lint-clean contract.");
+  const [account, setAccount] = useState("");
+  const [txHash, setTxHash] = useState("");
+  const [contractAddress, setContractAddress] = useState("");
+  const [codeSize, setCodeSize] = useState(0);
 
-  const deploy = async () => {
+  const isDeploying = step === "loading" || step === "wallet" || step === "deploying" || step === "waiting";
+
+  async function deploy() {
     try {
-      setStatus("Fetching contract code...");
-      const res = await fetch("/api/contract");
-      const { code } = await res.json();
+      setStep("loading");
+      setStatus("Loading contracts/pr_to_payout.py from the local app...");
+      setTxHash("");
+      setContractAddress("");
 
-      if (!code) throw new Error("Could not load contract code");
+      const contractResponse = await fetch("/api/contract", { cache: "no-store" });
+      const payload = (await contractResponse.json()) as ContractResponse;
 
-      setStatus("Connecting to wallet...");
-      if (!window.ethereum) throw new Error("No wallet detected (MetaMask, Rabby, etc.)");
+      if (!contractResponse.ok || !payload.code) {
+        throw new Error(payload.error || "Could not load contract code.");
+      }
 
-      // Apply wallet shim for non-MetaMask wallets (Rabby, etc.)
+      setCodeSize(payload.code.length);
+
+      const provider = window.ethereum as EthereumProvider | undefined;
+      if (!provider) {
+        throw new Error("No injected wallet detected. Open this page with MetaMask or Rabby installed.");
+      }
+
+      setStep("wallet");
+      setStatus("Requesting wallet account...");
       applyWalletShim();
 
-      const [account] = await window.ethereum.request({ method: "eth_requestAccounts" });
+      const accounts = await provider.request<string[]>({ method: "eth_requestAccounts" });
+      const selectedAccount = accounts[0];
+      if (!selectedAccount) {
+        throw new Error("No wallet account was returned.");
+      }
+      setAccount(selectedAccount);
 
-      setStatus("Deploying to Bradbury (Please approve in wallet)...");
+      setStep("deploying");
+      setStatus("Submitting deployment transaction to Bradbury. Approve it in your wallet...");
+
       const client = createClient({
         chain: testnetBradbury,
-        endpoint: process.env.NEXT_PUBLIC_GENLAYER_RPC_URL || "https://rpc-bradbury.genlayer.com",
+        endpoint: BRADBURY_RPC,
         provider: window.ethereum as never,
-        account: account,
+        account: selectedAccount as `0x${string}`,
       });
 
-      // Required for wallet-based transactions on GenLayer
       await client.connect("testnetBradbury");
 
-      const hash = await client.deployContract({
-        code: code,
-      });
+      const hash = await client.deployContract({ code: payload.code });
+      setTxHash(hash);
 
-      setStatus(`Transaction sent! Waiting for acceptance... Hash: ${hash}`);
-      
+      setStep("waiting");
+      setStatus("Transaction submitted. Waiting for ACCEPTED finality...");
+
       const receipt = await client.waitForTransactionReceipt({
         hash: hash as never,
         status: TransactionStatus.ACCEPTED,
         interval: 5_000,
-        retries: 60,
+        retries: 120,
       });
-      
-      setStatus("Deployed successfully!");
-      const decoded = receipt.txDataDecoded as any;
-      if (decoded?.contractAddress) {
-        setContractAddress(decoded.contractAddress);
-      } else if (receipt.recipient) {
-        setContractAddress(receipt.recipient);
-      }
-    } catch (error: any) {
-      console.error(error);
-      setStatus(`Error: ${error.message || "Deployment failed"}`);
-    }
-  };
 
+      const newAddress = getReceiptContractAddress(receipt);
+      if (!newAddress) {
+        throw new Error("Deployment accepted, but the contract address was not found in the receipt.");
+      }
+
+      setContractAddress(newAddress);
+      setStep("done");
+      setStatus("Deployment accepted. Use this new address for resubmission.");
+    } catch (error) {
+      setStep("error");
+      setStatus(getErrorMessage(error));
+    }
+  }
 
   return (
-    <div className="container mx-auto max-w-2xl p-8 pt-24 text-center">
-      <h1 className="mb-6 text-3xl font-bold">One-Click GenLayer Deployer</h1>
-      <p className="mb-8 text-slate-400">
-        Deploy directly from your browser to bypass CLI errors. Make sure your MetaMask is set to the Bradbury Testnet.
-      </p>
+    <main className="mx-auto flex min-h-[calc(100vh-80px)] w-full max-w-4xl flex-col justify-center px-5 py-16">
+      <section className="glass glow-emerald rounded-[2rem] p-6 shadow-2xl sm:p-10">
+        <div className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="meta-label mb-3">Temporary Deploy Page</p>
+            <h1 className="text-gradient text-4xl sm:text-5xl">Deploy PR-to-Payout</h1>
+            <p className="mt-4 max-w-2xl text-base leading-7 text-text-secondary">
+              This page deploys the current local `contracts/pr_to_payout.py` to GenLayer Bradbury.
+              Use it after the GenVM lint fix, then update `NEXT_PUBLIC_CONTRACT_ADDRESS` with the new address.
+            </p>
+          </div>
 
-      <button
-        onClick={deploy}
-        className="mb-8 rounded-lg bg-emerald-600 px-6 py-3 font-semibold text-white transition hover:bg-emerald-500"
-      >
-        Deploy to Bradbury
-      </button>
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-text-secondary">
+            <div className="font-mono text-text-primary">testnetBradbury</div>
+            <div className="mt-1 break-all">{BRADBURY_RPC}</div>
+          </div>
+        </div>
 
-      <div className="rounded-lg border border-slate-700 bg-slate-800 p-6 text-left shadow-lg">
-        <h2 className="mb-2 text-sm font-semibold text-slate-400">Status</h2>
-        <p className="mb-4 text-emerald-400">{status}</p>
+        <button
+          type="button"
+          onClick={deploy}
+          disabled={isDeploying}
+          className="w-full rounded-2xl bg-brand-emerald px-6 py-4 text-base font-black text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+        >
+          {isDeploying ? "Deploying..." : "Deploy Lint-Clean Contract"}
+        </button>
 
-        <h2 className="mb-2 text-sm font-semibold text-slate-400">Check Explorer</h2>
-        <p className="mb-4 text-sm text-slate-300">
-          Open MetaMask, click the "Contract Deployment" transaction you just approved, and click "View on block explorer". Your contract address will be there!
-        </p>
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
+          <InfoCard label="Status" value={status} highlight={step === "done" || step === "error"} />
+          <InfoCard label="Wallet" value={account || "Not connected yet"} mono />
+          <InfoCard label="Contract Code" value={codeSize ? `${codeSize.toLocaleString()} characters loaded` : "Not loaded yet"} />
+          <InfoCard label="Transaction" value={txHash || "No transaction yet"} mono href={txHash ? `${BRADBURY_EXPLORER}/tx/${txHash}` : undefined} />
+        </div>
 
-        {contractAddress && (
-          <>
-            <h2 className="mb-2 text-sm font-semibold text-slate-400">Contract Address found in Receipt</h2>
-            <div className="rounded bg-slate-900 p-3 font-mono text-white break-all">
+        {contractAddress ? (
+          <div className="mt-8 rounded-3xl border border-brand-emerald/30 bg-brand-emerald/10 p-5">
+            <p className="meta-label mb-3">New Contract Address</p>
+            <div className="break-all rounded-2xl bg-slate-950/70 p-4 font-mono text-sm text-white">
               {contractAddress}
             </div>
-            <p className="mt-4 text-sm text-slate-400">
-              ✅ Copy this address and put it in your <code className="text-pink-400">.env</code> file under <code className="text-pink-400">NEXT_PUBLIC_CONTRACT_ADDRESS</code>.
-            </p>
-          </>
-        )}
-      </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <a
+                href={`${BRADBURY_EXPLORER}/address/${contractAddress}`}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full border border-white/15 px-4 py-2 text-sm font-bold text-text-primary transition hover:bg-white/10"
+              >
+                Open in Explorer
+              </a>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard.writeText(contractAddress)}
+                className="rounded-full border border-white/15 px-4 py-2 text-sm font-bold text-text-primary transition hover:bg-white/10"
+              >
+                Copy Address
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+function InfoCard({
+  label,
+  value,
+  href,
+  mono = false,
+  highlight = false,
+}: {
+  label: string;
+  value: string;
+  href?: string;
+  mono?: boolean;
+  highlight?: boolean;
+}) {
+  const content = (
+    <div className={`break-words text-sm ${mono ? "font-mono" : ""} ${highlight ? "text-brand-emerald" : "text-text-primary"}`}>
+      {value}
+    </div>
+  );
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <p className="mb-2 text-[11px] font-black uppercase tracking-[0.25em] text-text-secondary/70">
+        {label}
+      </p>
+      {href ? (
+        <a href={href} target="_blank" rel="noreferrer" className="underline decoration-white/30 underline-offset-4">
+          {content}
+        </a>
+      ) : (
+        content
+      )}
     </div>
   );
 }

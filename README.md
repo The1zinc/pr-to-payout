@@ -26,7 +26,7 @@ Sponsor creates bounty → Funds it with GEN → Builder submits PR + deploy URL
 
 **On-chain (GenLayer Bradbury Testnet)**
 - `contracts/pr_to_payout.py` — Intelligent Contract handling bounty state, GEN escrow, AI evaluation via `run_nondet_unsafe`, and automated payouts through ghost contracts
-- Storage: JSON blobs in `TreeMap[bigint, str]` for reliable serialization on GenVM
+- Storage: JSON blobs in `TreeMap[str, str]` with string ID keys for reliable serialization on GenVM
 
 **Frontend (Next.js 16)**
 - React app with wallet connection (MetaMask, Rabby, etc.)
@@ -58,7 +58,7 @@ Open [http://localhost:3000](http://localhost:3000).
 Create a `.env` file:
 
 ```
-NEXT_PUBLIC_CONTRACT_ADDRESS=0x65454C3F3B6630C3E36A9B0B6628Dc4C790daF0e
+NEXT_PUBLIC_CONTRACT_ADDRESS=0xc60d1C1993EE49510b3202ac02FA2Da57C341E6D
 NEXT_PUBLIC_GENLAYER_NETWORK=testnetBradbury
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://rpc-bradbury.genlayer.com
 ```
@@ -125,7 +125,7 @@ pr-to-payout/
 | RPC | https://rpc-bradbury.genlayer.com |
 | Explorer | https://explorer-bradbury.genlayer.com |
 | Faucet | https://testnet-faucet.genlayer.foundation |
-| Deployed Contract | `0x65454C3F3B6630C3E36A9B0B6628Dc4C790daF0e` |
+| Deployed Contract | `0xc60d1C1993EE49510b3202ac02FA2Da57C341E6D` |
 
 ## License
 
